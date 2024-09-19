@@ -9,8 +9,8 @@ const MAX_PATCH_COUNT = process.env.MAX_PATCH_LENGTH
 
 export const robot = (app: Probot) => {
   const loadChat = async (context: Context) => {
-    if (process.env.OPENAI_API_KEY) {
-      return new Chat(process.env.OPENAI_API_KEY);
+    if (process.env.OPENAI_API_KEY || process.env.AZURE_OPENAI_API_KEY ) {
+      return new Chat();
     }
 
     const repo = context.repo();
@@ -29,7 +29,7 @@ export const robot = (app: Probot) => {
         return null;
       }
 
-      return new Chat(data.value);
+      return new Chat();
     } catch {
       await context.octokit.issues.createComment({
         repo: repo.repo,
@@ -40,6 +40,80 @@ export const robot = (app: Probot) => {
       return null;
     }
   };
+
+  app.on('issue_comment.created', async (context: Context<'issue_comment.created'>) => {
+    const comment = context.payload.comment.body;
+    console.log('comment', comment);
+    if (comment.includes('review this please')) {
+      const chat = new Chat();
+      if (!chat) {
+        console.log('Chat initialized failed');
+        return 'no chat';
+      }
+      const pull_url = context.payload.issue.pull_request?.url;
+      if (!pull_url) {
+        console.log('this is no comment in pull request');
+        return 'this issue is not pull request';
+      }
+      const pull_request = await context.octokit.request('GET ' + pull_url);
+      const repo = context.repo();
+      const data = await context.octokit.repos.compareCommits({
+        owner: repo.owner,
+        repo: repo.repo,
+        base: pull_request.data.base.sha,
+        head: pull_request.data.head.sha,
+      });
+
+      let { files: changedFiles, commits } = data.data;
+      if (!changedFiles?.length) {
+        console.log('no change found');
+        return 'no change';
+      }
+
+      console.time('gpt cost');
+      for (let i = 0; i < changedFiles.length; i++) {
+        const file = changedFiles[i];
+        const patch = file.patch || '';
+
+        if (file.status !== 'modified' && file.status !== 'added') {
+          continue;
+        }
+
+        const matches = patch.match(/\r\n|\r|\n/g);
+        const lineCount = matches ? matches.length : 0;
+        console.log('lineCount', lineCount);
+      
+        if (!patch || lineCount > MAX_PATCH_COUNT) {
+          console.log(
+            `${file.filename} skipped caused by its diff is too large`
+          );
+          continue;
+        }
+        try {
+          const res = await chat?.codeReview(patch);
+
+          if (!!res) {
+            await context.octokit.pulls.createReviewComment({
+              repo: repo.repo,
+              owner: repo.owner,
+              pull_number: context.pullRequest().pull_number,
+              commit_id: commits[commits.length - 1].sha,
+              path: file.filename,
+              body: res,
+              position: patch.split('\n').length - 1,
+            });
+          }
+        } catch (e) {
+          console.error(`review ${file.filename} failed`, e);
+        }
+      }
+
+      console.timeEnd('gpt cost');
+      console.info('successfully reviewed');
+    }
+    return 'success';
+  });
+
 
   app.on(
     ['pull_request.opened', 'pull_request.synchronize'],

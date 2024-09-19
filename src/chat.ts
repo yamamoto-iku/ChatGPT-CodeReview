@@ -6,10 +6,10 @@ export class Chat {
   private azureOpenAIClient: OpenAIClient | undefined;
   private deploymentId = process.env.MODEL || 'gpt-3.5-turbo';
 
-  constructor(apikey: string) {
+  constructor() {
     if (process.env.OPENAI_API_KEY) {
       this.openAIClient = new ChatGPTAPI({
-        apiKey: apikey,
+        apiKey: process.env.OPENAI_API_KEY,
         apiBaseUrl:
           process.env.OPENAI_API_ENDPOINT || 'https://api.openai.com/v1',
         completionParams: {
